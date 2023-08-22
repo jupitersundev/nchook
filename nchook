@@ -16,12 +16,25 @@ from watchdog.events import FileSystemEventHandler
 class DBEventHandler(FileSystemEventHandler):
     """Handles notification DB change events"""
 
-    def __init__(self, db, rec_ids, hook_script_path):
+    def __init__(self, db, rec_ids, max_id, hook_script_path):
         super().__init__()
         self.db = db
         self.rec_ids = rec_ids
+        self.max_id = max_id
         self.hook_script_path = hook_script_path
         self.logger = logging.root
+        cursor_max_id = self.db.cursor()
+
+        sql_max_id = f"SELECT max(rec_id) FROM record"
+        
+        while True:
+            try:
+                cursor_max_id.execute(sql_max_id)
+                self.max_id = cursor_max_id.fetchone()[0]
+                self.logger.info(f"-- Max ID -- : {self.max_id}")
+                break
+            except apsw.BusyError:
+                time.sleep(1)
 
     # don't really care about move, create, delete events
     def on_moved(self, event):
@@ -38,14 +51,21 @@ class DBEventHandler(FileSystemEventHandler):
         cursor = self.db.cursor()
 
         # select notifications we don't know about
-        sql = f"SELECT rec_id, data FROM record WHERE rec_id NOT IN ({','.join('?' * len(rec_ids))})"
+        # sql = f"SELECT rec_id, data FROM record WHERE rec_id NOT IN ({','.join('?' * len(rec_ids))})"
+        # sql = f"SELECT rec_id, data FROM record WHERE rec_id > ? ORDER BY rec_id"
+        sql = f"SELECT rec_id, data FROM record ORDER BY rec_id DESC LIMIT 1"
 
         # query the db, and process it to a list of notif. IDs and data.
         # the db might be busy so just wait it out.
         while True:
             try:
+                # new_objs = [(col[0], process_plist(col[1]))
+                #            for col in cursor.execute(sql, rec_ids)]
+        #        new_objs = [(col[0], process_plist(col[1]))
+        #                    for col in cursor.execute(sql, (self.max_id,))]
                 new_objs = [(col[0], process_plist(col[1]))
-                            for col in cursor.execute(sql, rec_ids)]
+                            for col in cursor.execute(sql, ())]
+
                 break
             except apsw.BusyError:
                 time.sleep(1)
@@ -53,23 +73,27 @@ class DBEventHandler(FileSystemEventHandler):
         self.logger.info(f"-- NEW -- : {len(new_objs)}")
 
         for obj in new_objs:
-            # add new IDs to known IDs
-            self.rec_ids.append(obj[0])
+            if self.max_id != obj[0]:
+                # add new IDs to known IDs
+                # self.rec_ids.append(obj[0])
+                self.max_id=obj[0]
 
-            # run script for each new notification
-            result = subprocess.run(
-                args=[
-                    self.hook_script_path,
-                    obj[1]["app"],
-                    obj[1]["title"],
-                    obj[1]["body"],
-                    str(obj[1]["time"])
-                ],
-                capture_output=True
-            )
-            self.logger.info(f"{obj[1]}")
-            self.logger.info(f"stdout: {result.stdout}")
-            self.logger.info(f"stderr: {result.stderr}")
+                # run script for each new notification
+                result = subprocess.run(
+                    args=[
+                        self.hook_script_path,
+                        obj[1]["app"],
+                        obj[1]["title"],
+                        obj[1]["body"],
+                        str(obj[1]["time"]),
+                        str(obj[0])
+                    ],
+                    capture_output=True
+                )
+                self.logger.info(f"{obj[0]}")
+                self.logger.info(f"{obj[1]}")
+                self.logger.info(f"stdout: {result.stdout}")
+                self.logger.info(f"stderr: {result.stderr}")
 
 # process data plist from notification center db
 
@@ -132,7 +156,7 @@ if __name__ == "__main__":
         pathlib.Path.home(), ".config", "nchook", "nchook_script"
     )
 
-    event_handler = DBEventHandler(db, rec_ids, hook_script_path)
+    event_handler = DBEventHandler(db, rec_ids, 0, hook_script_path)
 
     # we have to use a Kqueue observer not FSEvents because FSEvents
     # doesn't send updates for files the user doesn't own for privacy stuff,
