@@ -32,6 +32,17 @@ class DBEventHandler(FileSystemEventHandler):
                 cursor_max_id.execute(sql_max_id)
                 self.max_id = cursor_max_id.fetchone()[0]
                 self.logger.info(f"-- Max ID -- : {self.max_id}")
+                subprocess.run(
+                    args=[
+                        self.hook_script_path,
+                        "nchook",
+                        "*** START ***",
+                        "NCHOOK STARTED !!!",
+                        str(time.time()),
+                        str(self.max_id)
+                    ],
+                    capture_output=True
+                )
                 break
             except apsw.BusyError:
                 time.sleep(1)
